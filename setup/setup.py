@@ -27,6 +27,7 @@ JDBC_VER = "4.3.4"
 JDBC_JAR = f"snowflake-jdbc-{JDBC_VER}.jar"
 JDBC_URL = f"https://repo1.maven.org/maven2/net/snowflake/snowflake-jdbc/{JDBC_VER}/{JDBC_JAR}"
 LAKE_PREFIX = "lake/lineitem"
+DATASETS = ROOT / "datasets"
 YEARS = range(1992, 1999)
 
 
@@ -136,6 +137,12 @@ def step_lake(con):
     if all(f"ship_year={y}.parquet" in have for y in YEARS):
         say(f"s3://{bucket}/{LAKE_PREFIX}/ already has the 7 Parquet files, skipping")
         return
+    local = DATASETS / "lake" / "lineitem"
+    if all((local / f"ship_year={y}.parquet").exists() for y in YEARS):
+        subprocess.run(["aws", "s3", "sync", str(local), f"s3://{bucket}/{LAKE_PREFIX}/", "--only-show-errors"], check=True)
+        say(f"uploaded the 7 Parquet files from datasets/ to s3://{bucket}/{LAKE_PREFIX}/")
+        return
+    say("datasets/lake/lineitem is missing, exporting LINEITEM from Snowflake instead")
     import pyarrow as pa
     import pyarrow.parquet as pq
     money = pa.decimal128(15, 2)
@@ -179,14 +186,16 @@ def step_accelerate(con):
 
 
 def step_tickets(con):
-    data = ROOT / "setup" / "data"
-    subprocess.run([sys.executable, "gen_tickets.py"], cwd=data, check=True, capture_output=True)
+    csv_file = DATASETS / "support_tickets.csv"
+    if not csv_file.exists():  # regenerate (deterministic, seed 42): same rows as the committed file
+        subprocess.run([sys.executable, "gen_tickets.py"], cwd=ROOT / "setup" / "data", check=True, capture_output=True)
+        csv_file = ROOT / "setup" / "data" / "support_tickets.csv"
     d = NAMES["DATA"]
     con.execute(f"CREATE SCHEMA IF NOT EXISTS {d}")
     con.execute(f"""CREATE OR REPLACE TABLE {d}.SUPPORT_TICKETS (
       TICKET_ID DECIMAL(9,0), C_CUSTKEY DECIMAL(9,0), CREATED_DATE DATE, CHANNEL VARCHAR(40),
       CATEGORY VARCHAR(20), CHURN_INTENT DECIMAL(1,0), TICKET_TEXT VARCHAR(2000))""")
-    con.import_from_file(str(data / "support_tickets.csv"), (d, "SUPPORT_TICKETS"), import_params={"skip": 1})
+    con.import_from_file(str(csv_file), (d, "SUPPORT_TICKETS"), import_params={"skip": 1})
     cnt = con.execute(f"SELECT COUNT(*) FROM {d}.SUPPORT_TICKETS").fetchval()
     say(f"{d}.SUPPORT_TICKETS: {cnt:,} synthetic tickets")
 
