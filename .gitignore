@@ -1,0 +1,12 @@
+.env
+*.pem
+*.p8
+secrets/
+__pycache__/
+*.pyc
+.venv/
+app/cache/
+setup/data/support_tickets.csv
+setup/data/lake/
+jars/
+.DS_Store

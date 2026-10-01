@@ -1,0 +1,4 @@
+streamlit>=1.39
+pyexasol>=0.26
+snowflake-connector-python[pandas]>=3.12
+pyarrow>=15
