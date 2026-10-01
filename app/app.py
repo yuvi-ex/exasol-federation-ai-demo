@@ -393,7 +393,7 @@ def diagram(active):
     def pill(k, x, y):
         c = "pill" + ((" on" if k in on_e else " via" if k in via_e else " dim") if q else "")
         return (f'<g class="{c}"><rect x="{x - 16}" y="{y - 15}" width="32" height="30" rx="15"/>'
-                f'<text x="{x}" y="{y + 5}" text-anchor="middle">{k}</text></g>')
+                f'<text x="{x}" y="{y + 5}" text-anchor="middle">{SHOWN.get(k, k)}</text></g>')
 
     lbl = ""
     if q and q.get("go"):
@@ -426,6 +426,7 @@ def diagram(active):
 </svg></div>'''
 
 
+SHOWN = {"C": "A", "D": "B", "A": "C", "E": "D"}  # letter on screen, left to right
 LEGEND = {"A": "Qdrant Cloud: a Python virtual-schema adapter sends your search text over https; Qdrant embeds it and returns the nearest tickets as rows",
           "C": "Snowflake: a JDBC virtual schema pushes the SQL down, Snowflake does the work",
           "D": "Amazon S3: Exasol reads the Parquet files in place, no load step",
@@ -605,11 +606,11 @@ with tab_demo:
     with left:
         html(diagram(active))
         q = QUESTIONS.get(active)
-        edges = sorted({"C", "D"} if active == "acc" else ((q["edges"] | q.get("via_edges", set())) if q else set()))
+        edges = sorted({"C", "D"} if active == "acc" else ((q["edges"] | q.get("via_edges", set())) if q else set()), key=lambda e: SHOWN.get(e, e))
         if edges:
-            html("".join(f'<div class="hint" style="margin-top:.45rem"><b>{e}</b> &middot; {LEGEND[e]}</div>' for e in edges))
+            html("".join(f'<div class="hint" style="margin-top:.45rem"><b>{SHOWN.get(e, e)}</b> &middot; {LEGEND[e]}</div>' for e in edges))
         elif not q:
-            html("".join(f'<div class="hint" style="margin-top:.35rem"><b>{e}</b> &middot; {t}</div>' for e, t in LEGEND.items()))
+            html("".join(f'<div class="hint" style="margin-top:.35rem"><b>{SHOWN.get(e, e)}</b> &middot; {t}</div>' for e, t in sorted(LEGEND.items(), key=lambda kv: SHOWN.get(kv[0], kv[0]))))
 
 # ------------------------------------------------------------------ tab 1: overview
 Q_FANOUT = """SELECT
