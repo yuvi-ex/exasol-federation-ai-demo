@@ -183,6 +183,12 @@ html("""<style>
 .p5.sv .p5-n { background:#6B6FE8 !important; } .p5.sv .p5-s { background:#6B6FE8 !important; }
 .pp-chip, .lf-tot { background:#12796A !important; }
 .dgm .pill rect { fill:#3A4A63; }
+/* ---- a bigger header banner ---- */
+.hero-slim { padding:1.35rem 1.8rem !important; border-radius:22px !important; margin-bottom:1.1rem !important; gap:1.2rem !important; }
+.hs-t { font-size:1.75rem !important; line-height:1.25 !important; letter-spacing:-.02em; }
+.hs-t span { display:block; font-size:1.05rem !important; margin:.35rem 0 0 !important; color:rgba(247,251,255,.78) !important; letter-spacing:0; }
+.hs-m { gap:.6rem !important; }
+.hs-pill { font-size:.78rem !important; padding:.4rem .95rem !important; letter-spacing:.08em !important; }
 .dgm .vialbl { font-size:12px; font-weight:800; fill:#12796A; font-style:italic; }
 .dgm .pill rect { fill:#081226; } .dgm .pill text { font-size:13px; font-weight:800; fill:#fff; }
 .dgm .pill.on rect { fill:#1FA08B; }
