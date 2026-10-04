@@ -268,10 +268,10 @@ ORDER  BY AVG_DAYS_LATE DESC"""
 QD_TEXT = "goods smashed during shipping"
 Q_ACC = "CREATE OR REPLACE TABLE " + (SQLDIR / "20_accelerate.sql").read_text().split(
     "CREATE OR REPLACE TABLE", 1)[1].strip().rstrip(";")
-Q_FAST = """-- question 1 again, now on the copy inside Exasol (built once from Snowflake + S3)
-SELECT NATION, SUM(ORDERS) AS ORDERS, ROUND(SUM(LIFETIME_REVENUE) / 1e6, 1) AS REVENUE_M
-FROM   DEMO_ACCEL.CUSTOMER_360
-GROUP  BY NATION ORDER BY REVENUE_M DESC LIMIT 5"""
+_Q4 = (SQLDIR / "25_late_deliveries.sql").read_text()
+Q_FED = "-- the same question asked live across Snowflake and S3 (no copy)\n" + _Q4.split("-- Q4 live", 1)[1].split("-- Q4 accelerated", 1)[0].strip().rstrip(";")
+Q_FAST = "-- on the copy inside Exasol (built once from Snowflake orders + S3 shipments)\n" + _Q4.split("-- Q4 accelerated", 1)[1].split("-- Q4 total", 1)[0].strip().rstrip(";")
+Q_LATE_TOTAL = _Q4.split("-- Q4 total", 1)[1].strip().rstrip(";")
 HERO = "-- Q6" + (SQLDIR / "50_questions.sql").read_text().replace("{VEC_TABLE}", VEC_TABLE).split("-- Q6", 1)[1].strip().rstrip(";")
 Q_ML_SCORE = """SELECT COUNT(*) AS TICKETS_SCORED,
        SUM(CASE WHEN DEMO_AI.CHURN_RISK(TICKET_TEXT) >= 0.5 THEN 1 ELSE 0 END) AS FLAGGED
@@ -323,22 +323,22 @@ QUESTIONS = {
                did=["Sent the words to Qdrant Cloud, which turned them into a vector itself and returned the nearest tickets.",
                     "Qdrant's matches came back as rows of an ordinary table.",
                     "Those rows join to any other data with plain SQL (question 6)."]),
-    "acc": dict(n=4, ask="Same revenue question, after moving the data into Exasol", src="Question 1 again, on the copy in Exasol's in-memory engine: same numbers, a fraction of the time",
-                nodes={"cloud"}, edges=set(), go="", back="",
-                did=["One statement copied the Snowflake orders (joined with S3 shipments) into an Exasol table.",
-                     "The same question returns the same numbers as live Snowflake, so the move can be proven, table by table.",
-                     "Every model, dashboard and agent now reads it in milliseconds."]),
+    "acc": dict(n=4, ask="Which big customers keep getting late deliveries?", src="Snowflake orders + S3 shipments, copied once into Exasol's in-memory engine",
+                nodes={"cloud"}, edges=set(), via={"snow", "s3"}, via_edges={"C", "D"}, vialbl="copied once into Exasol", go="", back="",
+                did=["One statement joined Snowflake orders with S3 shipments and stored the result in Exasol (CUSTOMER_360).",
+                     "Asked live across Snowflake and S3, this question takes the better part of a minute. On the Exasol copy: a fraction of a second, same answer.",
+                     "Federate first, then move only the data people use every day, and prove each move question by question."]),
     "ml": dict(n=5, ask="Which customers does our ML model flag as likely to leave?", src="Python UDF running scikit-learn, inside Exasol",
                nodes={"cloud"}, edges={"E"}, go="", back="",
                did=["The model was trained inside Exasol by a Python UDF (scikit-learn) and deployed to BucketFS.",
                     "A Python UDF scored all 5,000 tickets in parallel, where the data lives: nothing was exported.",
                     "To rank who matters most, the same SQL added each flagged customer's open orders from the accelerated customer table."]),
     "all": dict(n=6, ask="Which unhappy customers put the most revenue at risk?", src="Qdrant Cloud and the ML model live, plus Snowflake and S3 data through the accelerated customer table",
-                nodes={"cloud", "qdrant"}, edges={"A", "E"}, via={"snow", "s3"}, via_edges={"C", "D"}, go="", back="",
+                nodes={"cloud", "qdrant"}, edges={"A", "E"}, via={"snow", "s3"}, via_edges={"C", "D"}, vialbl="via CUSTOMER_360 (question 4)", go="", back="",
                 punch=("No pipeline was built for this question.", "Just virtual schemas and a UDF: Qdrant Cloud searched live, the model scored in the database.", "Four sources &middot; one SQL statement &middot; zero copies"),
                 did=["Qdrant Cloud found 300 tickets that sound like a customer about to leave.",
                      "The ML model (Python UDF) confirmed which of them really signal churn.",
-                     "Exasol added open orders (Snowflake) and late shipments (S3) from the table built in question 4, in the same SQL."]),
+                     "Exasol added open orders (Snowflake) and late shipments (S3) from the accelerated customer table (question 4), in the same SQL."]),
 }
 
 
@@ -351,7 +351,7 @@ def run_question(k):
         text = ss.get("qd_text", QD_TEXT)
         return {"main": db.run("cloud", q_qd(text), key="vec4"), "text": text}
     if k == "acc":
-        return {"main": db.run("cloud", Q_FAST, key="acc")}
+        return {"main": db.run("cloud", Q_FAST, key="acc4"), "total": db.run("cloud", Q_LATE_TOTAL, key="acc4_total")}
     if k == "ml":
         return {"main": db.run("cloud", Q_ML, key="ml"), "score": db.run("cloud", Q_ML_SCORE, key="ml_score"),
                 "meta": db.run("cloud", Q_ML_META, key="ml_meta")}
@@ -377,8 +377,6 @@ def diagram(active):
     """User -> Exasol (with the UDF) -> virtual schemas -> Snowflake, S3, Qdrant Cloud. Lights the path a question takes."""
     q = QUESTIONS.get(active)
     on_n, on_e = (set(q["nodes"]), set(q["edges"])) if q else (set(), set())
-    if active == "acc":
-        on_e, on_n = {"C", "D"}, {"cloud", "snow", "s3"}
     via_n, via_e = (q.get("via", set()), q.get("via_edges", set())) if q else (set(), set())
     if q:
         on_n |= {"user"}
@@ -405,8 +403,9 @@ def diagram(active):
     if q and q.get("go"):
         for e, x in (("C", 110), ("D", 310), ("A", 510)):
             if e in on_e:
+                bx, anc = (x - 22, "end") if e == "A" else (x + 22, "start")   # rightmost link: keep labels inside the diagram
                 lbl += (f'<text class="flowlbl" x="{x - 22}" y="{452}" text-anchor="end">&darr; {q["go"]}</text>'
-                        f'<text class="flowlbl back" x="{x + 22}" y="{474}" text-anchor="start">&uarr; {q["back"]}</text>')
+                        f'<text class="flowlbl back" x="{bx}" y="{474}" text-anchor="{anc}">&uarr; {q["back"]}</text>')
     udf_on = active in ("ml", "all")
     nat_on = active in ("acc", "ml", "all")
     udf_cls = "udf" + ((" on" if udf_on else " dim") if q else "")
@@ -428,7 +427,7 @@ def diagram(active):
   <g class="{cn("qdrant")}"><rect x="420" y="500" width="180" height="110" rx="16"/><text class="nt" x="438" y="536">Qdrant Cloud</text><text class="ns" x="438" y="559">5,000 support tickets</text><text class="ns" x="438" y="579">embeds text itself</text></g>
   {pill("C", 110, 460)}{pill("D", 310, 460)}{pill("A", 510, 460)}{pill("E", 558, 240)}
   {lbl}
-  {'<text class="vialbl" x="210" y="444" text-anchor="middle">built in question 4</text>' if via_e else ""}
+  {f'<text class="vialbl" x="210" y="444" text-anchor="middle">{q.get("vialbl", "")}</text>' if via_e else ""}
 </svg></div>'''
 
 
@@ -473,17 +472,26 @@ def answer(k, out):
             tag = "churn risk" if churn else str(t.get("CATEGORY", "")).replace("_", " ")
             vis += f'<div class="tk{" churn" if churn else ""}"><span class="tag">{_h.escape(tag)}</span>{_h.escape(str(t["TICKET_TEXT"]))}</div>'
     elif k == "acc":
-        sf = ss.get("done_sf", {}).get("main")
-        if not sf:
-            f = HERE / "cache" / "sf.json"
-            sf = json.loads(f.read_text()) if f.exists() else None
-        live = (sf or {}).get("secs") or 11.0
-        same = bool(sf) and {(r["NATION"], round(float(r["REVENUE_M"]), 1)) for r in sf["rows"]} == \
-            {(r["NATION"], round(float(r["REVENUE_M"]), 1)) for r in rows}
-        nums = [(f"{res['secs']:.2f} s", f"in Exasol, against {live:.0f} s live from Snowflake", True),
-                ("identical" if same else "check", "numbers to question 1, country by country" if same else "compare with question 1", False),
-                (f"{live / max(res['secs'], .01):,.0f}&times;", "faster after the move", False)]
-        vis = bars(rows, "NATION", "REVENUE_M", "${:,.0f}", " M")
+        f = HERE / "cache" / "acc4_fed.json"      # the same question asked live across Snowflake + S3, recorded by setup
+        fed = json.loads(f.read_text()) if f.exists() else None
+        key = lambda rs: [(r["CUSTOMER"], int(float(r["OPEN_ORDERS_K"])), round(float(r["PCT_LATE"]), 1)) for r in rs]
+        same = bool(fed) and key(fed["rows"]) == key(rows)
+        if fed:
+            live = fed["secs"]
+            nums = [(f"{res['secs']:.2f} s", f"in Exasol, against {live:.0f} s live across Snowflake + S3", True),
+                    ("identical" if same else "check", "answer to the live sources, customer by customer" if same else "compare with the live sources", False),
+                    (f"{live / max(res['secs'], .01):,.0f}&times;", "faster after the move", False)]
+        else:  # live timing not recorded yet: python -m setup.setup accelerate
+            nums = [(f"{res['secs']:.2f} s", "in Exasol, on the copy", True), ("2 sources", "Snowflake orders + S3 shipments, one table", False),
+                    ("1", "statement built it", False)]
+        vis = "".join(f'<div class="cu"><div><div class="nm">{_h.escape(str(r["CUSTOMER"]))} &middot; {_h.escape(str(r["NATION"]).title())}</div>'
+                      f'<div class="mt" style="font-style:normal">{float(r["PCT_LATE"]):.0f}% of {int(r["LINES"])} shipments arrived late (S3)</div></div>'
+                      f'<div class="v">${float(r["OPEN_ORDERS_K"]):,.0f}K<div class="mt" style="font-style:normal">open orders (Snowflake)</div></div></div>'
+                      for r in rows)
+        tot = (out.get("total") or {}).get("rows") or []
+        if tot:
+            vis += (f'<div class="hint" style="margin-top:.5rem;font-size:.82rem">{int(tot[0]["CUSTOMERS"]):,} customers get 3 in 4 deliveries late; '
+                    f'together they hold ${float(tot[0]["OPEN_B"]):,.1f} B of open orders.</div>')
     elif k == "ml":
         sc = out["score"]["rows"][0] if out["score"]["rows"] else {}
         meta = out["meta"]["rows"][0] if out["meta"]["rows"] else {}
@@ -601,7 +609,9 @@ with tab_demo:
                     st.caption(f"Model registry: churn v{meta.get('VERSION')}, trained {meta.get('TRAINED_AT')} on "
                                f"{meta.get('N_TRAIN')} tickets, {meta.get('ALGORITHM')}")
                 if active == "acc":
-                    st.caption("Built once with this statement (about 45 s):")
+                    st.caption("The same question asked live across Snowflake and S3, before the move:")
+                    st.code(Q_FED, language="sql", wrap_lines=True)
+                    st.caption("The copy was built once with this statement (about 45 s):")
                     st.code(Q_ACC, language="sql", wrap_lines=True)
                     if st.button("Rebuild it now", key="rebuild"):
                         with st.spinner("Joining Snowflake orders with S3 shipments into Exasol…"):
@@ -612,7 +622,7 @@ with tab_demo:
     with left:
         html(diagram(active))
         q = QUESTIONS.get(active)
-        edges = sorted({"C", "D"} if active == "acc" else ((q["edges"] | q.get("via_edges", set())) if q else set()), key=lambda e: SHOWN.get(e, e))
+        edges = sorted((q["edges"] | q.get("via_edges", set())) if q else set(), key=lambda e: SHOWN.get(e, e))
         if edges:
             html("".join(f'<div class="hint" style="margin-top:.45rem"><b>{SHOWN.get(e, e)}</b> &middot; {LEGEND[e]}</div>' for e in edges))
         elif not q:

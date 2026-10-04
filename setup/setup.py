@@ -183,6 +183,23 @@ def step_accelerate(con):
     exa.run_file(con, SQL / "20_accelerate.sql")
     n = con.execute(f"SELECT COUNT(*) FROM {NAMES['ACCEL']}.CUSTOMER_360").fetchval()
     say(f"{NAMES['ACCEL']}.CUSTOMER_360: {n:,} customers built from Snowflake + S3 in {time.time() - t:.0f}s")
+    # question 4 is answered on this table; record the same question asked live across Snowflake + S3,
+    # so the page can show both timings and check the answers are identical
+    live, fast = exa.statements((SQL / "25_late_deliveries.sql").read_text())[:2]
+    con.execute("ALTER SESSION SET QUERY_CACHE = 'OFF'")
+    for name, sql in (("acc4_fed", live), ("acc4", fast)):
+        t = time.time()
+        stmt = con.execute(sql)
+        cols = list(stmt.column_names())
+        num = lambda v: (float(v) if "." in v else int(v)) if isinstance(v, str) and v.replace(".", "", 1).isdigit() else v
+        rows = [{c: num(v) for c, v in zip(cols, r)} for r in stmt.fetchall()]
+        secs = time.time() - t
+        cache = ROOT / "app" / "cache"
+        cache.mkdir(exist_ok=True)
+        (cache / f"{name}.json").write_text(json.dumps({"rows": rows, "cols": cols, "secs": secs,
+                                                        "live": True, "error": None, "at": time.strftime("%H:%M:%S")}, default=str))
+        say(f"question 4 {'live across Snowflake + S3' if name == 'acc4_fed' else 'on the Exasol copy'}: {secs:.2f}s")
+    con.execute("ALTER SESSION SET QUERY_CACHE = 'ON'")
 
 
 def step_tickets(con):
@@ -253,7 +270,7 @@ def step_smoke(con):
                                f"JOIN {NAMES['SNOWFLAKE_VS']}.CUSTOMER c ON c.C_CUSTKEY = o.O_CUSTKEY JOIN {NAMES['SNOWFLAKE_VS']}.NATION n "
                                "ON n.N_NATIONKEY = c.C_NATIONKEY GROUP BY n.N_NAME)"),
               ("Q2 S3", f"SELECT COUNT(DISTINCT L_SHIPMODE) FROM {NAMES['FEDERATED']}.S3_LINEITEM"),
-              ("Q4 accelerated", f"SELECT COUNT(DISTINCT NATION) FROM {NAMES['ACCEL']}.CUSTOMER_360")]
+              ("Q4 accelerated", exa.statements((SQL / "25_late_deliveries.sql").read_text())[1])]
     parts = [p for p in exa.statements(q)]
     checks += [("Q3 vector", parts[0]), ("Q5 ML", parts[1]), ("Q6 everything", parts[2])]
     for label, sql in checks:

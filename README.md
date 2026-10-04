@@ -30,7 +30,7 @@ The page has two tabs:
 | 1 | Which countries bring the most revenue? | Snowflake read live; the whole join and GROUP BY run in Snowflake, 25 rows come back |
 | 2 | Which shipping modes run late? | 6 M rows read straight from Parquet on S3, no load job |
 | 3 | Find complaints about damaged goods | Semantic search in a WHERE clause; Qdrant Cloud embeds the text itself |
-| 4 | Same revenue question, after moving the data into Exasol | Identical numbers to question 1, about 0.2 s instead of about 12 s |
+| 4 | Which big customers keep getting late deliveries? | Snowflake orders + S3 shipments copied once into Exasol: the same answer as asking both live, in about 0.2 s instead of about 47 s |
 | 5 | Which customers does our ML model flag as likely to leave? | Model trained and run inside Exasol, nothing exported |
 | 6 | Which unhappy customers put the most revenue at risk? | Vector search + ML model + accelerated data in one SQL statement |
 
@@ -79,7 +79,7 @@ demo the page shows the last good result, clearly labelled as cached.
 Lead with the audience's challenges, then show each one solved live:
 
 1. **Data is spread across systems; every project starts with a pipeline** → virtual schemas query it in place (questions 1, 2).
-2. **Federation is too slow for what everyone uses** → federate first, accelerate only the hot data, with identical results (question 4 after question 1).
+2. **Federation is too slow for what everyone uses** → federate first, copy only the hot data into Exasol, and prove the answer is identical (question 4).
 3. **Vector search lives in a silo** → Qdrant becomes a SQL table you can join (question 3).
 4. **Models have to leave the data to be scored** → Python UDFs score in the database; MLflow models can live in BucketFS via [`exasol/mlflow-plugin`](https://github.com/exasol/mlflow-plugin) (question 5).
 5. **SQL that runs but is wrong** → the fan-out example on the Overview tab; [Semantic Views](https://github.com/exasol-labs/exasol-semantic-views) refuses ill-posed questions.
@@ -99,12 +99,27 @@ it), and the Langfuse trace is **illustrative** (only the SQL step is measured l
 | `setup/snowflake_setup.sql` | Role, warehouse, typed views and token for Snowflake |
 | `setup/sql/10_federated_views.sql` | S3 Parquet view and the Snowflake/S3 federated views |
 | `setup/sql/20_accelerate.sql` | The one statement that builds `CUSTOMER_360` inside Exasol |
+| `setup/sql/25_late_deliveries.sql` | Question 4, asked live across Snowflake + S3 and on the Exasol copy |
 | `setup/sql/30_vector.sql` | The Qdrant Cloud virtual-schema adapter (Python) and the loader UDF |
 | `setup/sql/40_ml_udfs.sql` | The model registry, the training UDF and the scoring UDF |
 | `setup/sql/50_questions.sql` | Questions 3, 5 and 6 |
 | `datasets/` | The data the demo loads: synthetic tickets (CSV) and the S3 lake (7 Parquet files); see [datasets/README.md](datasets/README.md) |
 | `setup/data/gen_tickets.py` | Regenerates the tickets exactly (fixed seed) |
 | `demo/` | Settings loader and Exasol helpers |
+
+## Where the data lives (and how to show it)
+
+Every source keeps its own data; Exasol reads it where it is. If the audience asks to see the data in the source system:
+
+| Source | What is there | Where to look | Background |
+|---|---|---|---|
+| **Snowflake** | TPC-H customers (150 k) and orders (1.5 M), exposed as typed views `EXASOL_DEMO_ADMIN.TPCH.*` | Snowsight: run `SELECT * FROM EXASOL_DEMO_ADMIN.TPCH.ORDERS LIMIT 10;`. To show the pushdown, open **Monitoring → Query History** and filter on user `EXASOL_SVC`: each demo question appears as one query that Exasol sent | [Snowflake's TPC-H sample data](https://docs.snowflake.com/en/user-guide/sample-data-tpch) · [Query History](https://docs.snowflake.com/en/user-guide/ui-snowsight-activity) · [TPC-H](https://www.tpc.org/tpch/) |
+| **Amazon S3** | 7 Parquet files, 6,001,215 shipment lines, under `lake/lineitem/` | S3 console → your bucket → `lake/` → `lineitem/` (the bucket is private, so the object URL returns Access Denied; that is the point), or `aws s3 ls s3://YOUR-BUCKET/lake/lineitem/ --human-readable --summarize`. The same files are in this repo: [`datasets/lake/lineitem/`](datasets/lake/lineitem/) | [Exasol `IMPORT ... FROM PARQUET`](https://docs.exasol.com/db/latest/sql/import.htm) · [Amazon S3](https://docs.aws.amazon.com/AmazonS3/latest/userguide/Welcome.html) |
+| **Qdrant Cloud** | 5,000 support tickets as 384-dimension vectors (collection set by `QDRANT_COLLECTION`) | [cloud.qdrant.io](https://cloud.qdrant.io) → your cluster → **Dashboard** → the collection: points, vectors and payload text. The source CSV is in this repo: [`datasets/support_tickets.csv`](datasets/support_tickets.csv) | [Qdrant Cloud Inference](https://qdrant.tech/documentation/cloud/inference/) · [all-MiniLM-L6-v2](https://huggingface.co/sentence-transformers/all-MiniLM-L6-v2) · [Exasol Labs Qdrant adapter](https://github.com/exasol-labs/exasol-qdrant-adapter) |
+| **Exasol** | `DEMO_ACCEL.CUSTOMER_360` (one row per customer, built once from Snowflake + S3), `DEMO_DATA.SUPPORT_TICKETS`, the model registry `DEMO_AI.MODEL_REGISTRY` and the model file in BucketFS (`/buckets/uploads/default/demo/models/churn_model.pkl`) | Any SQL client: `SELECT * FROM DEMO_ACCEL.CUSTOMER_360 LIMIT 10;` and `SELECT MODEL_NAME, VERSION, TRAINED_AT, N_TRAIN, ALGORITHM FROM DEMO_AI.MODEL_REGISTRY;` | [Exasol SaaS](https://docs.exasol.com/saas/home.htm) · [Snowflake virtual schema](https://github.com/exasol/snowflake-virtual-schema) |
+
+`CUSTOMER_360` is an ordinary Exasol table, not a cache: it has no expiry and stays as of its last build. Rebuild it with
+the button under question 4 ("For engineers"), or on a schedule, by re-running `setup/sql/20_accelerate.sql`.
 
 ## Things worth knowing
 
