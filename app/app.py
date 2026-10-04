@@ -637,9 +637,15 @@ Q_TOKENS = """SELECT (SELECT COUNT(*) FROM DEMO_DATA.SUPPORT_TICKETS) AS TICKETS
 
 
 @st.cache_data(ttl=600, show_spinner=False)
+def overview_query(sql, key):
+    """Overview numbers change only when the data is rebuilt: run them once per 10 minutes, not on every rerun."""
+    return db.run("cloud", sql, key=key)
+
+
+@st.cache_data(ttl=600, show_spinner=False)
 def token_budget():
     """Rough LLM token counts (about 4 characters per token), measured on the real tables."""
-    r = db.run("cloud", Q_TOKENS, key="tokens")
+    r = overview_query(Q_TOKENS, "tokens")
     raw = r["rows"][0] if r["rows"] else {}
     hero = ss.get("done_all", {}).get("main")
     if not hero:
@@ -674,7 +680,7 @@ with tab_over:
           <div class="ly"><div class="ly-n">Sources</div><div class="ly-t">Stay where they are, owned by their teams</div></div></div>''')
 
     # ---- wrong but plausible: the fan-out the semantic layer refuses
-    fan = db.run("cloud", Q_FANOUT, key="fanout")
+    fan = overview_query(Q_FANOUT, "fanout")
     fr = fan["rows"][0] if fan["rows"] else {}
     naive, right = float(fr.get("NAIVE_M") or 0), float(fr.get("CORRECT_M") or 0)
     if naive and right:
@@ -723,7 +729,7 @@ with tab_over:
     # ---- MLflow: a pipeline, not a paragraph
     head("MLflow", "Keep your MLOps. Run the model where the data is.",
          "Train in MLflow as today; Exasol runs the registered model on all the data.")
-    meta = db.run("cloud", Q_ML_META, key="ml_meta")
+    meta = overview_query(Q_ML_META, "ml_meta")
     m = meta["rows"][0] if meta["rows"] else {}
     chip = (f'churn v{m.get("VERSION")} &middot; {100 * float(m.get("ACCURACY") or 0):.0f}% on '
             f'{int(m.get("N_TEST") or 0):,} unseen tickets') if m else "model registry"
